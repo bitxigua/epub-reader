@@ -18,9 +18,13 @@ import java.io.IOException
 import java.net.URLDecoder
 import java.nio.charset.Charset
 import java.nio.charset.StandardCharsets
+import java.util.Collections
+import java.util.IdentityHashMap
+import java.util.LinkedHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.text.Charsets
 import javax.swing.SwingUtilities
+import kotlin.collections.ArrayDeque
 
 @Service(Service.Level.PROJECT)
 class EpubReaderService(private val project: Project) {
@@ -132,6 +136,7 @@ class EpubReaderService(private val project: Project) {
     private fun buildChaptersFromToc(book: Book): ChapterBuildResult? {
         val tocReferences = book.tableOfContents?.tocReferences ?: return null
         if (tocReferences.isEmpty()) return null
+
         val resourceMap = book.resources?.all?.mapNotNull { res ->
             normalizePath(res.href)?.let { path -> path to res }
         }?.toMap().orEmpty()
@@ -147,9 +152,9 @@ class EpubReaderService(private val project: Project) {
                     ?: "Untitled"
                 val hrefCandidate = reference.completeHref ?: reference.resource?.href
                 val parts = splitHref(hrefCandidate)
+                val fragmentOriginal = parts.fragment?.trim()?.takeIf { it.isNotEmpty() }
                 val normalizedPath = parts.path?.let { normalizePath(it) }
                     ?: reference.resource?.href?.let { normalizePath(it) }
-                val fragment = normalizeFragment(parts.fragment)
                 val resource = when {
                     reference.resource != null -> reference.resource
                     normalizedPath != null -> resourceMap[normalizedPath]
@@ -159,7 +164,8 @@ class EpubReaderService(private val project: Project) {
                     title = title,
                     level = level,
                     resourcePath = normalizedPath,
-                    fragment = fragment,
+                    fragmentOriginal = fragmentOriginal,
+                    fragment = normalizeFragment(fragmentOriginal),
                     resource = resource,
                     order = orderCounter++
                 )
@@ -170,30 +176,40 @@ class EpubReaderService(private val project: Project) {
         traverse(tocReferences, level = 0)
         if (nodes.isEmpty()) return null
 
-        val docCache = mutableMapOf<String, Document?>()
         val nodesByResource = nodes
             .filter { it.resourcePath != null && it.resource != null }
             .groupBy { it.resourcePath!! }
             .mapValues { entry -> entry.value.sortedBy { it.order } }
+
+        val resourceSlices = mutableMapOf<String, ResourceSlice>()
+        nodesByResource.forEach { (path, sequence) ->
+            val document = sequence.firstNotNullOfOrNull { it.resource }?.toSanitizedDocument()
+                ?: return@forEach
+            val startNodes = resolveStartNodes(document, sequence)
+            resourceSlices[path] = ResourceSlice(document, sequence, startNodes)
+        }
 
         val chapters = mutableListOf<EpubChapter>()
         val entries = mutableListOf<EpubTocEntry>()
 
         nodes.forEachIndexed { index, node ->
             val resourcePath = node.resourcePath
-            val contentHtml = if (resourcePath != null && node.resource != null) {
-                val sequence = nodesByResource[resourcePath].orEmpty()
-                val position = sequence.indexOfFirst { it.order == node.order }
-                val upcomingFragments = if (position >= 0) {
-                    sequence.drop(position + 1).mapNotNull { it.fragment }.toSet()
-                } else {
-                    emptySet()
-                }
-                val document = docCache.getOrPut(resourcePath) {
-                    node.resource.toSanitizedDocument()
-                }
-                if (document != null) {
-                    extractChapterHtml(document, node.fragment, upcomingFragments, node.title)
+            val slice = resourcePath?.let { resourceSlices[it] }
+            val contentHtml = if (slice != null) {
+                val position = slice.sequence.indexOfFirst { it.order == node.order }
+                if (position >= 0) {
+                    val startNode = slice.startNodes.getOrNull(position) ?: slice.document.body()
+                    val nextStart = slice.startNodes.getOrNull(position + 1)
+                    if (startNode != null) {
+                        val raw = collectUntilNextStart(startNode, nextStart)
+                        if (raw.isNotBlank()) {
+                            sanitizeForDisplay(raw)
+                        } else {
+                            placeholderChapterHtml(node.title)
+                        }
+                    } else {
+                        placeholderChapterHtml(node.title)
+                    }
                 } else {
                     placeholderChapterHtml(node.title)
                 }
@@ -241,45 +257,64 @@ class EpubReaderService(private val project: Project) {
         return ChapterBuildResult(chapters, entries)
     }
 
-    private fun extractChapterHtml(
-        document: Document,
-        fragment: String?,
-        stopFragments: Set<String>,
-        fallbackTitle: String
-    ): String {
-        val body = document.body() ?: return placeholderChapterHtml(fallbackTitle)
-        val rawHtml = if (fragment == null) {
-            body.html()
-        } else {
-            val startElement = findFragmentElement(document, fragment)
-            if (startElement != null) {
-                val section = collectUntilFragments(startElement, stopFragments)
-                if (section.isBlank()) body.html() else section
-            } else {
-                body.html()
+    private fun resolveStartNodes(document: Document, sequence: List<TocNode>): List<Node?> {
+        if (sequence.isEmpty()) return emptyList()
+        val usedNodes = newIdentityNodeSet()
+        val headings = document.select("h1,h2,h3,h4,h5,h6").toList()
+        val headingByTitle = LinkedHashMap<String, Element>()
+        headings.forEach { heading ->
+            val key = normalizeTitle(heading.text())
+            if (key.isNotEmpty()) {
+                headingByTitle.putIfAbsent(key, heading)
             }
         }
-        if (rawHtml.isBlank()) return placeholderChapterHtml(fallbackTitle)
-        return sanitizeForDisplay(rawHtml)
+        val bodyChildren = document.body()?.children().orEmpty()
+
+        return sequence.mapIndexed { index, node ->
+            val candidates = ArrayDeque<Node?>()
+            findFragmentElement(document, node)?.let { candidates.add(it) }
+            val normalizedTitle = normalizeTitle(node.title)
+            if (normalizedTitle.isNotEmpty()) {
+                headingByTitle[normalizedTitle]?.let { candidates.add(it) }
+            }
+            val headingAtIndex = headings.getOrNull(index)
+            if (headingAtIndex != null) {
+                candidates.add(headingAtIndex)
+            } else if (headings.isNotEmpty()) {
+                val boundedHeading = headings[index.coerceAtMost(headings.lastIndex)]
+                candidates.add(boundedHeading)
+            }
+            bodyChildren.getOrNull(index)?.let { candidates.add(it) }
+            document.body()?.let { candidates.add(it) }
+
+            var resolved: Node? = null
+            while (candidates.isNotEmpty() && resolved == null) {
+                val candidate = candidates.removeFirst()
+                resolved = ensureUniqueStart(candidate, usedNodes)
+            }
+            resolved
+        }
     }
 
-    private fun findFragmentElement(document: Document, fragment: String): Element? {
-        document.getElementById(fragment)?.let { return it }
-        val normalized = fragment.lowercase()
-        val named = document.select("[name]").firstOrNull {
-            normalizeFragment(it.attr("name")) == normalized
+    private fun findFragmentElement(document: Document, node: TocNode): Element? {
+        node.fragmentOriginal?.let { original ->
+            document.getElementById(original)?.let { return it }
+            document.select("[name]").firstOrNull { it.attr("name") == original }?.let { return it }
         }
-        if (named != null) return named
-        return document.allElements.firstOrNull {
-            normalizeFragment(it.id()) == normalized
-        }
+        val normalized = node.fragment ?: return null
+        document.allElements.firstOrNull {
+            val idMatch = normalizeFragment(it.id()) == normalized
+            val nameMatch = normalizeFragment(it.attr("name")) == normalized
+            idMatch || nameMatch
+        }?.let { return it }
+        return null
     }
 
-    private fun collectUntilFragments(start: Node, stopFragments: Set<String>): String {
+    private fun collectUntilNextStart(start: Node, nextStart: Node?): String {
         val builder = StringBuilder()
         var current: Node? = start
         while (current != null) {
-            if (stopFragments.isNotEmpty() && current !== start && matchesFragmentNode(current, stopFragments)) {
+            if (current === nextStart) {
                 break
             }
             builder.append(current.outerHtml())
@@ -288,13 +323,27 @@ class EpubReaderService(private val project: Project) {
         return builder.toString()
     }
 
-    private fun matchesFragmentNode(node: Node, fragments: Set<String>): Boolean {
-        if (fragments.isEmpty()) return false
-        if (node !is Element) return false
-        val idMatch = normalizeFragment(node.id())?.let { fragments.contains(it) } ?: false
-        if (idMatch) return true
-        val nameMatch = normalizeFragment(node.attr("name"))?.let { fragments.contains(it) } ?: false
-        return nameMatch
+    private fun ensureUniqueStart(candidate: Node?, used: MutableSet<Node>): Node? {
+        var current = candidate
+        while (current != null) {
+            if (used.add(current)) {
+                return current
+            }
+            current = nextNode(current)
+        }
+        return null
+    }
+
+    private fun newIdentityNodeSet(): MutableSet<Node> =
+        Collections.newSetFromMap(IdentityHashMap())
+
+    private fun normalizeTitle(raw: String?): String {
+        if (raw == null) return ""
+        val trimmed = raw.trim()
+        if (trimmed.isEmpty()) return ""
+        return trimmed
+            .lowercase()
+            .replace("\\s+".toRegex(), " ")
     }
 
     private fun nextNode(node: Node): Node? {
@@ -449,10 +498,17 @@ class EpubReaderService(private val project: Project) {
         val tocEntries: List<EpubTocEntry>
     )
 
+    private data class ResourceSlice(
+        val document: Document,
+        val sequence: List<TocNode>,
+        val startNodes: List<Node?>
+    )
+
     private data class TocNode(
         val title: String,
         val level: Int,
         val resourcePath: String?,
+        val fragmentOriginal: String?,
         val fragment: String?,
         val resource: Resource?,
         val order: Int
