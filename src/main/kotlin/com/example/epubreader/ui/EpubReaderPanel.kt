@@ -14,8 +14,9 @@ import com.intellij.ui.components.JBPanel
 import com.intellij.util.ui.JBInsets
 import com.intellij.util.ui.JBUI
 import java.awt.BorderLayout
-import java.awt.FlowLayout
+import java.awt.Color
 import java.awt.Component
+import java.awt.FlowLayout
 import javax.swing.JButton
 import javax.swing.DefaultListCellRenderer
 import javax.swing.DefaultListModel
@@ -36,6 +37,10 @@ class EpubReaderPanel(project: Project) : JBPanel<EpubReaderPanel>(BorderLayout(
         isEditable = false
         margin = JBInsets(8, 8, 8, 8)
         putClientProperty(JEditorPane.HONOR_DISPLAY_PROPERTIES, true)
+        isOpaque = true
+        background = Color(0x2B, 0x2B, 0x2B)
+        foreground = Color(0xF0, 0xF0, 0xF0)
+        caretColor = Color(0xF0, 0xF0, 0xF0)
         text = infoHtml("Use Tools > Import EPUB to load a book.")
     }
     private val prevButton = JButton("Prev")
@@ -68,9 +73,15 @@ class EpubReaderPanel(project: Project) : JBPanel<EpubReaderPanel>(BorderLayout(
             }
         }
     }
+    private val tocScrollPane = ScrollPaneFactory.createScrollPane(tocList, true)
+    private val contentScrollPane = ScrollPaneFactory.createScrollPane(contentPane, true).apply {
+        val bg = Color(0x2B, 0x2B, 0x2B)
+        background = bg
+        viewport.background = bg
+    }
     private val splitter = OnePixelSplitter(false, 0.25f).apply {
-        firstComponent = ScrollPaneFactory.createScrollPane(tocList, true)
-        secondComponent = ScrollPaneFactory.createScrollPane(contentPane, true)
+        firstComponent = tocScrollPane
+        secondComponent = contentScrollPane
     }
     private var tocEntriesSnapshot: List<EpubTocEntry> = emptyList()
     private var updatingTocSelection = false
@@ -177,9 +188,27 @@ class EpubReaderPanel(project: Project) : JBPanel<EpubReaderPanel>(BorderLayout(
         }
     }
 
-    private fun infoHtml(message: String, colorHex: String = "#888888"): String {
+    private fun infoHtml(message: String, colorHex: String = "#f0f0f0"): String {
         val escaped = escapeHtml(message).replace("\n", "<br/>")
-        return "<html><body style=\"font-family: sans-serif; color: $colorHex;\">$escaped</body></html>"
+        return """
+            <html>
+              <head>
+                <style>
+                  body.epub-info {
+                    margin: 0;
+                    padding: 0;
+                    background-color: #000000;
+                    color: $colorHex;
+                    font-family: sans-serif;
+                    line-height: 1.5;
+                  }
+                </style>
+              </head>
+              <body class="epub-info">
+                $escaped
+              </body>
+            </html>
+        """.trimIndent()
     }
 
     private fun escapeHtml(value: String): String {

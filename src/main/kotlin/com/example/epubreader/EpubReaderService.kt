@@ -387,7 +387,7 @@ class EpubReaderService(private val project: Project) {
             safelist,
             Document.OutputSettings().prettyPrint(false)
         )
-        return "<html><body>$cleaned</body></html>"
+        return wrapChapterHtml(cleaned)
     }
 
     private fun displaySafelist(): Safelist {
@@ -424,7 +424,33 @@ class EpubReaderService(private val project: Project) {
             .replace("<", "&lt;")
             .replace(">", "&gt;")
         val message = "No textual content detected for \"$safeTitle\"."
-        return "<html><body><p style=\"color:#888888;\">$message</p></body></html>"
+        return wrapChapterHtml("<p style=\"color:#bbbbbb;\">$message</p>")
+    }
+
+    private fun wrapChapterHtml(content: String): String {
+        val body = content.trim().ifEmpty { "&nbsp;" }
+        return """
+            <html>
+              <head>
+                <style>
+                  body.epub-content {
+                    margin: 0;
+                    padding: 0;
+                    background-color: #2B2B2B;
+                    color: #f0f0f0;
+                    font-family: inherit;
+                    line-height: 1.5;
+                  }
+                  body.epub-content a {
+                    color: #4da3ff;
+                  }
+                </style>
+              </head>
+              <body class="epub-content">
+                $body
+              </body>
+            </html>
+        """.trimIndent()
     }
 
     private fun updateStateOnEdt(transform: (EpubReaderState) -> EpubReaderState) {
