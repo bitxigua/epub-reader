@@ -1,3 +1,5 @@
+import org.gradle.internal.classpath.Instrumented.systemProperty
+
 plugins {
     id("java")
     id("org.jetbrains.kotlin.jvm") version "2.1.0"
@@ -56,4 +58,16 @@ tasks {
     withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
         kotlinOptions.jvmTarget = "21"
     }
+    named("buildSearchableOptions") {
+        enabled = false
+    }
+}
+
+tasks.withType<org.jetbrains.intellij.platform.gradle.tasks.RunIdeTask> {
+    systemProperty("user.language", "zh")
+    systemProperty("user.country", "CN")
+}
+tasks.withType<org.jetbrains.intellij.platform.gradle.tasks.BuildPluginTask> {
+    systemProperty("user.language", "zh")
+    systemProperty("user.country", "CN")
 }
