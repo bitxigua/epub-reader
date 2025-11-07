@@ -43,8 +43,8 @@ class EpubReaderPanel(project: Project) : JBPanel<EpubReaderPanel>(BorderLayout(
         caretColor = Color(0xF0, 0xF0, 0xF0)
         text = infoHtml("Use Tools > Import EPUB to load a book.")
     }
-    private val prevButton = JButton("Prev")
-    private val nextButton = JButton("Next")
+    private val prevButton = JButton("上一章")
+    private val nextButton = JButton("下一章")
     private val statusLabel = JBLabel("")
     private val tocModel = DefaultListModel<EpubTocEntry>()
     private val tocList = JBList(tocModel).apply {
@@ -83,9 +83,12 @@ class EpubReaderPanel(project: Project) : JBPanel<EpubReaderPanel>(BorderLayout(
         firstComponent = tocScrollPane
         secondComponent = contentScrollPane
     }
+    private val toggleTocButton = JButton("收起目录")
     private var tocEntriesSnapshot: List<EpubTocEntry> = emptyList()
     private var updatingTocSelection = false
     private var lastRenderedContent: String? = null
+    private var tocHidden = false
+    private var lastSplitterProportion = 0.25f
 
     @Volatile
     private var pendingState: EpubReaderState? = null
@@ -108,6 +111,7 @@ class EpubReaderPanel(project: Project) : JBPanel<EpubReaderPanel>(BorderLayout(
         val controls = JPanel(FlowLayout(FlowLayout.LEFT)).apply {
             add(prevButton)
             add(nextButton)
+            add(toggleTocButton)
             add(statusLabel)
         }
         add(header, BorderLayout.NORTH)
@@ -116,6 +120,7 @@ class EpubReaderPanel(project: Project) : JBPanel<EpubReaderPanel>(BorderLayout(
 
         prevButton.addActionListener { readerService.previousChapter() }
         nextButton.addActionListener { readerService.nextChapter() }
+        toggleTocButton.addActionListener { toggleTocVisibility() }
         tocList.addListSelectionListener { event ->
             if (event.valueIsAdjusting || updatingTocSelection) return@addListSelectionListener
             val entry = tocList.selectedValue ?: return@addListSelectionListener
@@ -135,7 +140,7 @@ class EpubReaderPanel(project: Project) : JBPanel<EpubReaderPanel>(BorderLayout(
         chapterLabel.text = when {
             state.isLoading -> "Reading chapters..."
             state.errorMessage != null -> "Failed to load EPUB."
-            state.currentIndex >= 0 -> "Chapter ${state.currentIndex + 1}/${state.chapterCount}: ${state.currentChapterTitle}"
+            state.currentIndex >= 0 -> state.currentChapterTitle.ifBlank { "当前章节" }
             else -> "Load an EPUB file from Tools > Import EPUB."
         }
         val htmlContent = when {
@@ -151,12 +156,7 @@ class EpubReaderPanel(project: Project) : JBPanel<EpubReaderPanel>(BorderLayout(
         }
         prevButton.isEnabled = !state.isLoading && state.currentIndex > 0
         nextButton.isEnabled = !state.isLoading && state.currentIndex >= 0 && state.currentIndex < state.chapterCount - 1
-        statusLabel.text = when {
-            state.isLoading -> ""
-            state.errorMessage != null -> ""
-            state.currentIndex >= 0 -> "Chapter ${state.currentIndex + 1} of ${state.chapterCount}"
-            else -> ""
-        }
+        statusLabel.text = ""
         refreshToc(state.tocEntries, state.currentIndex)
     }
 
@@ -216,5 +216,23 @@ class EpubReaderPanel(project: Project) : JBPanel<EpubReaderPanel>(BorderLayout(
             .replace("&", "&amp;")
             .replace("<", "&lt;")
             .replace(">", "&gt;")
+    }
+
+    private fun toggleTocVisibility() {
+        if (tocHidden) {
+            splitter.firstComponent = tocScrollPane
+            splitter.proportion = lastSplitterProportion
+            toggleTocButton.text = "收起目录"
+            tocHidden = false
+            if (tocEntriesSnapshot.isNotEmpty()) {
+                val currentIndex = pendingState?.currentIndex ?: -1
+                refreshToc(tocEntriesSnapshot, currentIndex)
+            }
+        } else {
+            lastSplitterProportion = splitter.proportion
+            splitter.firstComponent = null
+            toggleTocButton.text = "打开目录"
+            tocHidden = true
+        }
     }
 }
