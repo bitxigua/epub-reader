@@ -1,12 +1,50 @@
-<svg width="40" height="40" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
-    <path d="M32.0845 7.94025V4H24.0203V7.9896H16.029V4H7.91553V7.94025H4V36H16.0044V32.0045C16.0058 30.9457 16.4274 29.9308 17.1766 29.1826C17.9258 28.4345 18.9412 28.0143 20 28.0143C21.0588 28.0143 22.0743 28.4345 22.8234 29.1826C23.5726 29.9308 23.9942 30.9457 23.9956 32.0045V36H36V7.94025H32.0845Z"
-          fill="url(#paint0_linear)"/>
-    <defs>
-        <linearGradient id="paint0_linear" x1="2.94192" y1="4.89955" x2="37.7772" y2="39.7345"
-                        gradientUnits="userSpaceOnUse">
-            <stop offset="0.15937" stop-color="#3BEA62"/>
-            <stop offset="0.5404" stop-color="#3C99CC"/>
-            <stop offset="0.93739" stop-color="#6B57FF"/>
-        </linearGradient>
-    </defs>
+<?xml version="1.0" encoding="UTF-8"?>
+<svg
+        xmlns="http://www.w3.org/2000/svg"
+        width="40"
+        height="40"
+        viewBox="0 0 40 40"
+        role="img"
+        aria-label="EPUB Reader plugin logo">
+    <title>EPUB Reader</title>
+
+    <!--
+      Layout notes:
+      - Total canvas: 40x40
+      - 2px transparent padding on every side -> content area = 36x36 at (2,2)
+      - All shapes sit inside the 36x36 content box so the perimeter padding requirement is met.
+    -->
+
+    <!-- background intentionally left transparent to comply with Marketplace -->
+    <rect x="0" y="0" width="40" height="40" fill="none"/>
+
+    <!-- Content group placed inside 2px padding -->
+    <g transform="translate(2,2)">
+
+        <!-- background rounded card for visual weight (fills most of 36x36) -->
+        <rect x="0" y="0" width="36" height="36" rx="6" ry="6" fill="#2D6CFF"/>
+
+        <!-- inner "book" shape centered inside the rounded card -->
+        <g transform="translate(6,6)">
+            <!-- left page / cover -->
+            <path d="M0 0 L10 0 L10 20 L0 20 Z" fill="#FFFFFF" opacity="0.98"/>
+            <!-- right page -->
+            <path d="M10 0 L24 0 L24 20 L10 20 Z" fill="#F7FBFF"/>
+            <!-- spine fold -->
+            <path d="M9.2 1 L9.2 19" stroke="#E6F0FF" stroke-width="0.9" stroke-linecap="round" opacity="0.9"/>
+            <!-- bookmark ribbon (accent) -->
+            <path d="M2 2 L5.5 2 L5.5 8 L4 7 L2 8 Z" fill="#FFB74D" stroke="#E6A43A" stroke-width="0.3"/>
+
+            <!-- subtle horizontal lines to suggest text on right page -->
+            <g fill="#D9E8FF" opacity="0.95">
+                <rect x="12" y="3" width="8" height="1.6" rx="0.8"/>
+                <rect x="12" y="7" width="10" height="1.6" rx="0.8"/>
+                <rect x="12" y="11" width="8" height="1.6" rx="0.8"/>
+                <rect x="12" y="15" width="10" height="1.6" rx="0.8"/>
+            </g>
+
+            <!-- small shadow at bottom for depth -->
+            <ellipse cx="12" cy="22.2" rx="11" ry="1.8" fill="#0B2940" opacity="0.08"/>
+        </g>
+    </g>
 </svg>
