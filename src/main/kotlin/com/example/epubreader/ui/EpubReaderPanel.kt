@@ -23,6 +23,7 @@ import javax.swing.DefaultListModel
 import javax.swing.JEditorPane
 import javax.swing.ListSelectionModel
 import javax.swing.JPanel
+import javax.swing.SwingConstants
 import javax.swing.SwingUtilities
 
 class EpubReaderPanel(project: Project) : JBPanel<EpubReaderPanel>(BorderLayout()), Runnable, Disposable {
@@ -30,8 +31,11 @@ class EpubReaderPanel(project: Project) : JBPanel<EpubReaderPanel>(BorderLayout(
 
     private val titleLabel = JBLabel("EPUB Reader").apply {
         border = JBUI.Borders.emptyBottom(4)
+        horizontalAlignment = SwingConstants.CENTER
     }
-    private val chapterLabel = JBLabel("Load an EPUB file from Tools > Import EPUB.")
+    private val chapterLabel = JBLabel("Load an EPUB file from Tools > Import EPUB.").apply {
+        horizontalAlignment = SwingConstants.CENTER
+    }
     private val contentPane = JEditorPane().apply {
         contentType = "text/html"
         isEditable = false
