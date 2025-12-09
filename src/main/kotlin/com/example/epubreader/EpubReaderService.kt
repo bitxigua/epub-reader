@@ -2,6 +2,7 @@ package com.example.epubreader
 
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.Service
+import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VirtualFile
@@ -29,6 +30,7 @@ import kotlin.collections.ArrayDeque
 @Service(Service.Level.PROJECT)
 class EpubReaderService(private val project: Project) {
     private val log = logger<EpubReaderService>()
+    private val progressService = project.service<EpubProgressService>()
     private val listeners = CopyOnWriteArrayList<(EpubReaderState) -> Unit>()
 
     @Volatile
@@ -36,6 +38,9 @@ class EpubReaderService(private val project: Project) {
 
     @Volatile
     private var chapters: List<EpubChapter> = emptyList()
+
+    @Volatile
+    private var currentBookKey: String? = null
 
     fun addListener(listener: (EpubReaderState) -> Unit) {
         listeners += listener
@@ -47,6 +52,7 @@ class EpubReaderService(private val project: Project) {
     }
 
     fun loadEpub(virtualFile: VirtualFile) {
+        val bookKey = buildBookKey(virtualFile)
         updateStateOnEdt { it.copy(isLoading = true, errorMessage = null, tocEntries = emptyList()) }
         ApplicationManager.getApplication().executeOnPooledThread {
             try {
@@ -59,6 +65,7 @@ class EpubReaderService(private val project: Project) {
                 }
                 ApplicationManager.getApplication().invokeLater {
                     chapters = chapterData.chapters
+                    currentBookKey = bookKey
                     state = state.copy(
                         bookTitle = book.title ?: virtualFile.nameWithoutExtension,
                         currentChapterTitle = chapterData.chapters.first().title,
@@ -75,6 +82,7 @@ class EpubReaderService(private val project: Project) {
                 log.warn("Failed to load EPUB", t)
                 ApplicationManager.getApplication().invokeLater {
                     chapters = emptyList()
+                    currentBookKey = null
                     state = EpubReaderState(
                         errorMessage = t.message ?: "Unexpected error while reading EPUB."
                     )
@@ -125,6 +133,23 @@ class EpubReaderService(private val project: Project) {
         }
     }
 
+    fun addBookmark(): Boolean {
+        val bookKey = currentBookKey ?: return false
+        val index = state.currentIndex.takeIf { it in chapters.indices } ?: return false
+        val chapterTitle = chapters[index].title
+        progressService.addBookmark(bookKey, index, chapterTitle)
+        return true
+    }
+
+    fun getBookmarksForCurrentBook(): List<EpubBookmark> {
+        val bookKey = currentBookKey ?: return emptyList()
+        return progressService.getBookmarks(bookKey)
+    }
+
+    fun hasActiveBook(): Boolean = currentBookKey != null && chapters.isNotEmpty()
+
+    private fun buildBookKey(virtualFile: VirtualFile): String = virtualFile.url
+
     private fun buildChapterData(book: Book): ChapterBuildResult {
         val fromToc = buildChaptersFromToc(book)
         if (fromToc != null && fromToc.chapters.isNotEmpty()) {
@@ -150,9 +175,10 @@ class EpubReaderService(private val project: Project) {
                 val title = reference.title?.takeIf { it.isNotBlank() }
                     ?: reference.resource?.title
                     ?: "Untitled"
-                val hrefCandidate = reference.completeHref ?: reference.resource?.href
+                val hrefCandidate = reference.safeCompleteHref()
                 val parts = splitHref(hrefCandidate)
                 val fragmentOriginal = parts.fragment?.trim()?.takeIf { it.isNotEmpty() }
+                    ?: reference.fragmentId?.trim()?.removePrefix("#")?.takeIf { it.isNotEmpty() }
                 val normalizedPath = parts.path?.let { normalizePath(it) }
                     ?: reference.resource?.href?.let { normalizePath(it) }
                 val resource = when {
@@ -494,6 +520,12 @@ class EpubReaderService(private val project: Project) {
         }
         val normalized = segments.joinToString("/")
         return normalized.ifBlank { null }
+    }
+
+    private fun TOCReference.safeCompleteHref(): String? {
+        val href = resource?.href?.takeIf { it.isNotBlank() } ?: return null
+        val fragment = fragmentId?.trim()?.removePrefix("#")?.takeIf { it.isNotEmpty() }
+        return if (fragment != null) "$href#$fragment" else href
     }
 
     private fun splitHref(href: String?): HrefParts {
