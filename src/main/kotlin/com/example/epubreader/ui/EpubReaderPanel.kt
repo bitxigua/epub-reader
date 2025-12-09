@@ -5,6 +5,8 @@ import com.example.epubreader.EpubReaderState
 import com.example.epubreader.EpubTocEntry
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.components.service
+import com.intellij.openapi.fileChooser.FileChooser
+import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory
 import com.intellij.openapi.project.Project
 import com.intellij.ui.OnePixelSplitter
 import com.intellij.ui.ScrollPaneFactory
@@ -17,23 +19,23 @@ import java.awt.BorderLayout
 import java.awt.Color
 import java.awt.Component
 import java.awt.FlowLayout
-import javax.swing.JButton
 import javax.swing.DefaultListCellRenderer
 import javax.swing.DefaultListModel
 import javax.swing.JEditorPane
+import javax.swing.JButton
 import javax.swing.ListSelectionModel
 import javax.swing.JPanel
 import javax.swing.SwingConstants
 import javax.swing.SwingUtilities
 
-class EpubReaderPanel(project: Project) : JBPanel<EpubReaderPanel>(BorderLayout()), Runnable, Disposable {
+class EpubReaderPanel(private val project: Project) : JBPanel<EpubReaderPanel>(BorderLayout()), Runnable, Disposable {
     private val readerService = project.service<EpubReaderService>()
 
     private val titleLabel = JBLabel("EPUB Reader").apply {
         border = JBUI.Borders.emptyBottom(4)
         horizontalAlignment = SwingConstants.CENTER
     }
-    private val chapterLabel = JBLabel("Load an EPUB file from Tools > Import EPUB.").apply {
+    private val chapterLabel = JBLabel("点击“导入 EPUB”或 Tools > Import EPUB 导入文件。").apply {
         horizontalAlignment = SwingConstants.CENTER
     }
     private val contentPane = JEditorPane().apply {
@@ -45,8 +47,9 @@ class EpubReaderPanel(project: Project) : JBPanel<EpubReaderPanel>(BorderLayout(
         background = Color(0x2B, 0x2B, 0x2B)
         foreground = Color(0xF0, 0xF0, 0xF0)
         caretColor = Color(0xF0, 0xF0, 0xF0)
-        text = infoHtml("Use Tools > Import EPUB to load a book.")
+        text = infoHtml("点击下方“导入 EPUB”按钮或在 Tools > Import EPUB 里选择文件。")
     }
+    private val importButton = JButton("导入 EPUB")
     private val prevButton = JButton("上一章")
     private val nextButton = JButton("下一章")
     private val statusLabel = JBLabel("")
@@ -113,6 +116,7 @@ class EpubReaderPanel(project: Project) : JBPanel<EpubReaderPanel>(BorderLayout(
             add(chapterLabel, BorderLayout.SOUTH)
         }
         val controls = JPanel(FlowLayout(FlowLayout.LEFT)).apply {
+            add(importButton)
             add(prevButton)
             add(nextButton)
             add(toggleTocButton)
@@ -124,6 +128,7 @@ class EpubReaderPanel(project: Project) : JBPanel<EpubReaderPanel>(BorderLayout(
 
         prevButton.addActionListener { readerService.previousChapter() }
         nextButton.addActionListener { readerService.nextChapter() }
+        importButton.addActionListener { openImportChooser() }
         toggleTocButton.addActionListener { toggleTocVisibility() }
         tocList.addListSelectionListener { event ->
             if (event.valueIsAdjusting || updatingTocSelection) return@addListSelectionListener
@@ -145,13 +150,13 @@ class EpubReaderPanel(project: Project) : JBPanel<EpubReaderPanel>(BorderLayout(
             state.isLoading -> "Reading chapters..."
             state.errorMessage != null -> "Failed to load EPUB."
             state.currentIndex >= 0 -> state.currentChapterTitle.ifBlank { "当前章节" }
-            else -> "Load an EPUB file from Tools > Import EPUB."
+            else -> "点击“导入 EPUB”或 Tools > Import EPUB 导入文件。"
         }
         val htmlContent = when {
             state.isLoading -> infoHtml("Please wait while the EPUB file is being parsed.")
             state.errorMessage != null -> infoHtml("Error: ${state.errorMessage}", "#c0392b")
             state.currentIndex >= 0 -> state.chapterContent
-            else -> infoHtml(state.chapterContent)
+            else -> infoHtml("点击下方“导入 EPUB”按钮或在 Tools > Import EPUB 里选择文件。")
         }
         if (lastRenderedContent != htmlContent) {
             contentPane.text = htmlContent
@@ -160,6 +165,7 @@ class EpubReaderPanel(project: Project) : JBPanel<EpubReaderPanel>(BorderLayout(
         }
         prevButton.isEnabled = !state.isLoading && state.currentIndex > 0
         nextButton.isEnabled = !state.isLoading && state.currentIndex >= 0 && state.currentIndex < state.chapterCount - 1
+        importButton.isEnabled = !state.isLoading
         statusLabel.text = ""
         refreshToc(state.tocEntries, state.currentIndex)
     }
@@ -212,7 +218,18 @@ class EpubReaderPanel(project: Project) : JBPanel<EpubReaderPanel>(BorderLayout(
                 $escaped
               </body>
             </html>
-        """.trimIndent()
+            """.trimIndent()
+    }
+
+    private fun openImportChooser() {
+        val descriptor = FileChooserDescriptorFactory.createSingleFileDescriptor("epub").apply {
+            title = "选择 EPUB 文件"
+            description = "选择一个 .epub 文件在工具窗口中打开。"
+            isForcedToUseIdeaFileChooser = true
+        }
+        FileChooser.chooseFile(descriptor, project, null) { file ->
+            readerService.loadEpub(file)
+        }
     }
 
     private fun escapeHtml(value: String): String {
