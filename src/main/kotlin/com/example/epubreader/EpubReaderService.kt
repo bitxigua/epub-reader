@@ -19,9 +19,11 @@ import java.io.IOException
 import java.net.URLDecoder
 import java.nio.charset.Charset
 import java.nio.charset.StandardCharsets
+import java.util.Base64
 import java.util.Collections
 import java.util.IdentityHashMap
 import java.util.LinkedHashMap
+import java.util.Locale
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.text.Charsets
 import javax.swing.SwingUtilities
@@ -151,21 +153,19 @@ class EpubReaderService(private val project: Project) {
     private fun buildBookKey(virtualFile: VirtualFile): String = virtualFile.url
 
     private fun buildChapterData(book: Book): ChapterBuildResult {
-        val fromToc = buildChaptersFromToc(book)
+        val resolver = ResourceResolver(book.resources?.all)
+        val fromToc = buildChaptersFromToc(book, resolver)
         if (fromToc != null && fromToc.chapters.isNotEmpty()) {
             return fromToc
         }
-        return buildChaptersFromSpine(book)
+        return buildChaptersFromSpine(book, resolver)
     }
 
-    private fun buildChaptersFromToc(book: Book): ChapterBuildResult? {
+    private fun buildChaptersFromToc(book: Book, resolver: ResourceResolver): ChapterBuildResult? {
         val tocReferences = book.tableOfContents?.tocReferences ?: return null
         if (tocReferences.isEmpty()) return null
 
-        val resourceMap = book.resources?.all?.mapNotNull { res ->
-            normalizePath(res.href)?.let { path -> path to res }
-        }?.toMap().orEmpty()
-        if (resourceMap.isEmpty()) return null
+        if (resolver.isEmpty()) return null
 
         val nodes = mutableListOf<TocNode>()
         var orderCounter = 0
@@ -183,7 +183,7 @@ class EpubReaderService(private val project: Project) {
                     ?: reference.resource?.href?.let { normalizePath(it) }
                 val resource = when {
                     reference.resource != null -> reference.resource
-                    normalizedPath != null -> resourceMap[normalizedPath]
+                    normalizedPath != null -> resolver.getByPath(normalizedPath)
                     else -> null
                 }
                 nodes += TocNode(
@@ -209,7 +209,8 @@ class EpubReaderService(private val project: Project) {
 
         val resourceSlices = mutableMapOf<String, ResourceSlice>()
         nodesByResource.forEach { (path, sequence) ->
-            val document = sequence.firstNotNullOfOrNull { it.resource }?.toSanitizedDocument()
+            val resource = resolver.getByPath(path) ?: sequence.firstNotNullOfOrNull { it.resource }
+            val document = resource?.toSanitizedDocument(resolver)
                 ?: return@forEach
             val startNodes = resolveStartNodes(document, sequence)
             resourceSlices[path] = ResourceSlice(document, sequence, startNodes)
@@ -255,7 +256,7 @@ class EpubReaderService(private val project: Project) {
         return ChapterBuildResult(chapters, entries)
     }
 
-    private fun buildChaptersFromSpine(book: Book): ChapterBuildResult {
+    private fun buildChaptersFromSpine(book: Book, resolver: ResourceResolver): ChapterBuildResult {
         val spine = book.spine.spineReferences
         if (spine.isNullOrEmpty()) {
             return ChapterBuildResult(emptyList(), emptyList())
@@ -266,7 +267,7 @@ class EpubReaderService(private val project: Project) {
             val resource = reference.resource ?: return@forEachIndexed
             val title = resource.title?.takeIf { it.isNotBlank() }
                 ?: "Chapter ${index + 1}"
-            val document = resource.toSanitizedDocument()
+            val document = resource.toSanitizedDocument(resolver)
             val bodyHtml = document?.body()?.html().orEmpty()
             val content = if (bodyHtml.isNotBlank()) {
                 sanitizeForDisplay(bodyHtml)
@@ -384,7 +385,7 @@ class EpubReaderService(private val project: Project) {
         return null
     }
 
-    private fun Resource?.toSanitizedDocument(): Document? {
+    private fun Resource?.toSanitizedDocument(resolver: ResourceResolver): Document? {
         if (this == null) return null
         val dataBytes = try {
             data
@@ -401,7 +402,9 @@ class EpubReaderService(private val project: Project) {
         }
         val document = Jsoup.parse(html)
         document.outputSettings().prettyPrint(false)
-        document.select("script,style,img").remove()
+        document.select("script,style").remove()
+        val basePath = normalizePath(this.href)
+        resolver.inlineImages(document, basePath)
         return document
     }
 
@@ -439,9 +442,11 @@ class EpubReaderService(private val project: Project) {
                 "blockquote",
                 "dl",
                 "dt",
-                "dd"
+                "dd",
+                "img"
             )
-            .removeTags("img")
+            .addAttributes("img", "src", "alt", "title", "width", "height")
+            .addProtocols("img", "src", "http", "https", "data")
     }
 
     private fun placeholderChapterHtml(title: String): String {
@@ -469,6 +474,10 @@ class EpubReaderService(private val project: Project) {
                   }
                   body.epub-content a {
                     color: #4da3ff;
+                  }
+                  body.epub-content img {
+                    max-width: 100%;
+                    height: auto;
                   }
                 </style>
               </head>
@@ -549,6 +558,89 @@ class EpubReaderService(private val project: Project) {
             trimmed
         }
         return decoded.lowercase()
+    }
+
+    private fun guessMimeType(path: String?): String? {
+        if (path.isNullOrBlank()) return null
+        val extension = path.substringAfterLast('.', missingDelimiterValue = "").lowercase(Locale.ROOT)
+        if (extension.isBlank()) return null
+        return when (extension) {
+            "jpg", "jpeg" -> "image/jpeg"
+            "png" -> "image/png"
+            "gif" -> "image/gif"
+            "svg", "svgz" -> "image/svg+xml"
+            "webp" -> "image/webp"
+            "bmp" -> "image/bmp"
+            "tif", "tiff" -> "image/tiff"
+            else -> null
+        }
+    }
+
+    private inner class ResourceResolver(resources: Collection<Resource>?) {
+        private val byPath: Map<String, Resource> = resources?.mapNotNull { res ->
+            normalizePath(res.href)?.let { path -> path to res }
+        }?.toMap().orEmpty()
+
+        private val dataUriCache = mutableMapOf<String, String>()
+
+        fun isEmpty(): Boolean = byPath.isEmpty()
+
+        fun getByPath(path: String?): Resource? {
+            val normalized = path?.let { normalizePath(it) } ?: return null
+            return byPath[normalized]
+        }
+
+        fun inlineImages(document: Document, baseHref: String?) {
+            val images = document.select("img[src]").toList()
+            if (images.isEmpty()) return
+            if (byPath.isEmpty()) {
+                images.forEach { it.remove() }
+                return
+            }
+            val normalizedBase = baseHref?.let { normalizePath(it) }
+            images.forEach { element ->
+                val srcValue = element.attr("src")
+                val dataUri = buildDataUri(normalizedBase, srcValue)
+                if (dataUri != null) {
+                    element.attr("src", dataUri)
+                } else {
+                    element.remove()
+                }
+            }
+        }
+
+        private fun buildDataUri(basePath: String?, srcValue: String?): String? {
+            val resourcePath = resolveResourcePath(basePath, srcValue) ?: return null
+            dataUriCache[resourcePath]?.let { return it }
+            val resource = byPath[resourcePath] ?: return null
+            val dataBytes = try {
+                resource.data
+            } catch (ioe: IOException) {
+                log.warn("Failed to read embedded resource data", ioe)
+                null
+            } ?: return null
+            val mediaType = resource.mediaType?.name
+                ?: guessMimeType(resource.href)
+                ?: "application/octet-stream"
+            val base64 = Base64.getEncoder().encodeToString(dataBytes)
+            return "data:$mediaType;base64,$base64".also { dataUriCache[resourcePath] = it }
+        }
+
+        private fun resolveResourcePath(basePath: String?, rawSrc: String?): String? {
+            if (rawSrc.isNullOrBlank()) return null
+            val trimmed = rawSrc.trim()
+            if (trimmed.startsWith("data:", ignoreCase = true)) return null
+            if (trimmed.contains("://")) return null
+            val sanitized = trimmed.substringBefore('#').substringBefore('?')
+            if (sanitized.isBlank()) return null
+            val candidate = if (sanitized.startsWith("/")) {
+                sanitized
+            } else {
+                val baseDir = basePath?.substringBeforeLast('/', missingDelimiterValue = "")
+                if (baseDir.isNullOrEmpty()) sanitized else "$baseDir/$sanitized"
+            }
+            return normalizePath(candidate)
+        }
     }
 
     private data class ChapterBuildResult(

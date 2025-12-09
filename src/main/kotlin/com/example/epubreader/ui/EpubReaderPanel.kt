@@ -30,6 +30,7 @@ import javax.swing.SwingUtilities
 
 class EpubReaderPanel(private val project: Project) : JBPanel<EpubReaderPanel>(BorderLayout()), Runnable, Disposable {
     private val readerService = project.service<EpubReaderService>()
+    private val htmlEditorKit = DataUriHtmlEditorKit()
 
     private val titleLabel = JBLabel("EPUB Reader").apply {
         border = JBUI.Borders.emptyBottom(4)
@@ -40,6 +41,7 @@ class EpubReaderPanel(private val project: Project) : JBPanel<EpubReaderPanel>(B
     }
     private val contentPane = JEditorPane().apply {
         contentType = "text/html"
+        editorKit = htmlEditorKit
         isEditable = false
         margin = JBInsets(8, 8, 8, 8)
         putClientProperty(JEditorPane.HONOR_DISPLAY_PROPERTIES, true)
